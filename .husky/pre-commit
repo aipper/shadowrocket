@@ -1,0 +1,7 @@
+set -e
+
+# 模块清单变化时同步 README 索引
+node scripts/build-index.mjs
+git add README.md
+
+npx lint-staged

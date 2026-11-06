@@ -1,0 +1,29 @@
+{
+  "name": "shadowrocket-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shadowrocket 模块 / 脚本 / 规则 / 配置合集",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "index": "node scripts/build-index.mjs",
+    "index:check": "node scripts/build-index.mjs --check",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{js,mjs,cjs,json,jsonc,md,yml,yaml}": "prettier --write",
+    "modules/*.sgmodule": "node scripts/validate.mjs",
+    "rules/*.list": "node scripts/validate.mjs"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10"
+  }
+}

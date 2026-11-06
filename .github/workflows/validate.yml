@@ -1,0 +1,36 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 校验模块 / 脚本 / 规则 / 配置
+        run: npm run validate
+
+      - name: 检查 README 索引
+        run: npm run index:check
+
+      - name: 检查格式
+        run: npm run lint

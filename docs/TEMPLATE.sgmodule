@@ -1,0 +1,20 @@
+#!name = 示例模块
+#!desc = 一句话说明这个模块做什么
+#!system = ios
+#!author = your-name
+#!homepage = https://github.com/aipper/shadowrocket
+#!category = 通用
+# 来源：原创
+#
+# 复制到 modules/ 后按需修改：
+#   1. 文件名用小写 kebab-case，例如 modules/my-module.sgmodule
+#   2. 脚本放在 scripts/ 下，用 https 绝对地址引用
+#   3. 新增 [Script] 时同步补上 [MITM] hostname
+
+[MITM]
+hostname = %APPEND% example.com
+
+# 需要脚本时参考：
+#
+# [Script]
+# http-response ^https?:\/\/example\.com\/api script-path=https://raw.githubusercontent.com/aipper/shadowrocket/main/scripts/example.js, requires-body=true, timeout=10, tag=示例脚本

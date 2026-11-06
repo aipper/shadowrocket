@@ -1,0 +1,7 @@
+.agents
+.aiws
+node_modules
+package-lock.json
+modules
+rules
+configs

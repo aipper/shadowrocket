@@ -1,0 +1,10 @@
+# 依赖与本地环境
+node_modules/
+*.log
+
+# 系统文件
+.DS_Store
+
+# AI 工具本地工作区，不随仓库分发
+.agents/
+.aiws/
