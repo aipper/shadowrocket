@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -94,8 +95,12 @@ function renderIndex(modules) {
       for (const module of list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))) {
         const rawUrl = `${RAW_BASE}/${module.path}`;
         const cdnUrl = `${CDN_BASE}/${module.path}`;
+        const docPath = `docs/modules/${path.basename(module.path, '.sgmodule')}.md`;
+        const label = existsSync(path.join(REPO_ROOT, docPath))
+          ? `[${escapeCell(module.name)}](${docPath})`
+          : escapeCell(module.name);
         lines.push(
-          `| ${escapeCell(module.name)} | ${escapeCell(module.desc)} | ${escapeCell(module.author)} | [raw](${rawUrl}) · [jsDelivr](${cdnUrl}) |`,
+          `| ${label} | ${escapeCell(module.desc)} | ${escapeCell(module.author)} | [raw](${rawUrl}) · [jsDelivr](${cdnUrl}) |`,
         );
       }
 

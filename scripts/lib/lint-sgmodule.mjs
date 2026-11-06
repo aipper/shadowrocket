@@ -3,8 +3,15 @@ import net from 'node:net';
 import path from 'node:path';
 
 import { CDN_BASE, OWNER, RAW_BASE, REPO, REPO_ROOT } from './repo.mjs';
-import { RULE_TYPES, checkRuleEntry, validCidr } from './rules.mjs';
-import { directiveMap, optionMap, parseModule } from './sgmodule.mjs';
+import { checkRuleEntry } from './rules.mjs';
+import {
+  collectPlaceholders,
+  directiveMap,
+  optionMap,
+  parseArguments,
+  parseModule,
+  splitFields,
+} from './sgmodule.mjs';
 
 const KNOWN_DIRECTIVES = new Set([
   'name',
@@ -16,6 +23,10 @@ const KNOWN_DIRECTIVES = new Set([
   'category',
   'date',
   'version',
+  'update',
+  'arguments',
+  'arguments-desc',
+  'requirement',
 ]);
 
 const KNOWN_SECTIONS = new Set([
@@ -42,21 +53,24 @@ const SCRIPT_TYPES = new Set([
 ]);
 
 const SCRIPT_OPTIONS = new Set([
+  'type',
+  'pattern',
   'script-path',
   'script',
+  'argument',
   'requires-body',
   'max-size',
+  'max-body-size',
   'binary-body-mode',
   'timeout',
   'tag',
   'engine',
-  'argument',
   'debug',
   'cronexp',
+  'event-name',
   'wake-system',
   'early-timeout',
   'enable',
-  'type',
   'script-update-interval',
 ]);
 
@@ -65,9 +79,19 @@ const MITM_KEYS = new Set([
   'skip-server-cert-verify',
   'client-source-address',
   'tcp-connection',
+  'enable',
+  'h2',
+  'ca-passphrase',
+  'ca-p12',
 ]);
 
 const HEADER_ACTIONS = new Set(['header-add', 'header-del', 'header-replace', 'header-merge']);
+
+const MAP_LOCAL_OPTIONS = new Set(['data', 'data-type', 'status-code', 'header']);
+
+const JQ_ACTIONS = new Set(['http-request-jq', 'http-response-jq']);
+
+const BUILTIN_PLACEHOLDERS = new Set(['GATEWAY_ADDRESS', 'SSID']);
 
 const ATTRIBUTION_RE = /(来源|源地址|原作者|出处|upstream|source)\s*[:：]/i;
 
@@ -78,6 +102,11 @@ function isValidRegex(pattern) {
   } catch {
     return false;
   }
+}
+
+function isValidCron(expression) {
+  const fields = expression.trim().split(/\s+/);
+  return fields.length === 5 && fields.every((field) => /^[\d*/,\-?LW#]+$/i.test(field));
 }
 
 function isValidHostname(host) {
@@ -98,8 +127,10 @@ function safeUrl(value) {
   }
 }
 
-/** script-path 指向本仓库文件时，确认文件真实存在。 */
+/** 只校验能确定是本仓库的绝对地址；模块参数占位符跳过。 */
 function checkScriptTarget(target, line, report) {
+  if (target.includes('{{')) return;
+
   if (/^http:\/\//i.test(target)) {
     report('error', line, 'script-path 必须使用 https，Shadowrocket 会拒绝明文 http');
     return;
@@ -146,43 +177,94 @@ function checkScriptTarget(target, line, report) {
   }
 }
 
+/** 经典写法：`<type> <pattern> script-path=…, option=…` */
+function parseClassicScript(text) {
+  const tokens = text.split(/\s+/);
+  const type = (tokens[0] || '').toLowerCase();
+  const patternSize = type === 'cron' ? 5 : 1;
+
+  return {
+    type,
+    pattern: tokens.slice(1, 1 + patternSize).join(' '),
+    options: optionMap(splitFields(tokens.slice(1 + patternSize).join(' '))),
+  };
+}
+
 function lintScript(section, report) {
   let httpScripts = 0;
 
   for (const entry of section.entries) {
-    const tokens = entry.text.split(/\s+/);
-    const type = (tokens[0] || '').toLowerCase();
+    const firstToken = (entry.text.split(/\s+/, 1)[0] || '').toLowerCase();
+    const classic = SCRIPT_TYPES.has(firstToken);
+
+    let type;
+    let pattern = '';
+    let options;
+
+    if (classic) {
+      const parsed = parseClassicScript(entry.text);
+      type = parsed.type;
+      pattern = parsed.pattern;
+      options = parsed.options;
+    } else {
+      // 命名写法：`名称 = type=…, pattern=…, script-path=…`
+      const separator = entry.text.indexOf('=');
+
+      if (separator === -1) {
+        report(
+          'error',
+          entry.line,
+          '无法解析脚本行：应为「类型 正则 script-path=…」或「名称 = type=…, script-path=…」',
+        );
+        continue;
+      }
+
+      const label = entry.text.slice(0, separator).trim();
+      options = optionMap(splitFields(entry.text.slice(separator + 1)));
+      type = (options.get('type') || '').toLowerCase();
+      pattern = options.get('pattern') || '';
+
+      if (!label) report('error', entry.line, '脚本行缺少名称');
+      if (!type) {
+        report('error', entry.line, `脚本 \`${label}\` 缺少 type=`);
+        continue;
+      }
+    }
 
     if (!SCRIPT_TYPES.has(type)) {
       report(
         'error',
         entry.line,
-        `未知脚本类型 \`${tokens[0]}\`，允许：${[...SCRIPT_TYPES].join(', ')}`,
+        `未知脚本类型 \`${type}\`，允许：${[...SCRIPT_TYPES].join(', ')}`,
       );
       continue;
     }
 
-    // cron 的匹配规则由 5 段组成，其余类型只占 1 段
-    const patternSize = type === 'cron' ? 5 : 1;
-    const pattern = tokens.slice(1, 1 + patternSize).join(' ');
-    const optionText = tokens.slice(1 + patternSize).join(' ');
-
-    if (!pattern) {
-      report('error', entry.line, '缺少匹配规则（脚本类型后的第二个字段）');
-    } else if (type.startsWith('http')) {
+    if (type === 'http-request' || type === 'http-response') {
       httpScripts += 1;
-      if (!isValidRegex(pattern)) report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
-    } else if (type === 'cron' && pattern.split(/\s+/).length < 5) {
-      report('warn', entry.line, `cron 表达式应有 5 段: ${pattern}`);
-    }
 
-    const options = optionMap(optionText.split(','));
+      if (!pattern) {
+        report('error', entry.line, `\`${type}\` 缺少 pattern`);
+      } else if (!pattern.includes('{{') && !isValidRegex(pattern)) {
+        report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+      }
+    } else if (type === 'cron') {
+      const expression = classic ? pattern : options.get('cronexp') || '';
+
+      if (!expression) report('error', entry.line, 'cron 脚本缺少 cronexp');
+      else if (!expression.includes('{{') && !isValidCron(expression)) {
+        report('warn', entry.line, `cron 表达式不合法: ${expression}`);
+      }
+    } else if (type === 'event' && !options.get('event-name')) {
+      report('warn', entry.line, 'event 脚本建议声明 event-name');
+    }
 
     for (const key of options.keys()) {
       if (!SCRIPT_OPTIONS.has(key)) report('warn', entry.line, `未知脚本参数 \`${key}\``);
     }
 
     const script = options.get('script-path') || options.get('script');
+
     if (!script) {
       report('error', entry.line, '缺少 `script-path=…`');
       continue;
@@ -196,7 +278,7 @@ function lintScript(section, report) {
 
 function lintMitm(section, report) {
   const hosts = new Set();
-  let declared = false;
+  let hasHostname = false;
 
   for (const entry of section.entries) {
     const separator = entry.text.indexOf('=');
@@ -216,13 +298,17 @@ function lintMitm(section, report) {
 
     if (key !== 'hostname') continue;
 
-    declared = true;
     const list = value.replace(/^%(append|insert)%/i, '').trim();
 
     if (!list) {
       report('error', entry.line, 'hostname 为空');
       continue;
     }
+
+    hasHostname = true;
+
+    // 由模块参数注入的 hostname 无法静态校验
+    if (list.includes('{{')) continue;
 
     for (const rawHost of list.split(',')) {
       const host = rawHost.trim();
@@ -234,7 +320,7 @@ function lintMitm(section, report) {
     }
   }
 
-  return declared && hosts.size > 0;
+  return hasHostname;
 }
 
 function lintRule(section, report) {
@@ -250,7 +336,9 @@ function lintUrlRewrite(section, report) {
       continue;
     }
 
-    if (!isValidRegex(pattern)) report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    if (!pattern.includes('{{') && !isValidRegex(pattern)) {
+      report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    }
 
     if (target === '-') {
       if (flags.length === 0) report('warn', entry.line, '`-` 后面应跟动作，例如 `- reject`');
@@ -273,7 +361,9 @@ function lintHeaderRewrite(section, report) {
       continue;
     }
 
-    if (!isValidRegex(pattern)) report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    if (!pattern.includes('{{') && !isValidRegex(pattern)) {
+      report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    }
 
     const action = rawAction.toLowerCase();
     if (!HEADER_ACTIONS.has(action)) {
@@ -296,31 +386,48 @@ function lintHeaderRewrite(section, report) {
 
 function lintMapLocal(section, report) {
   for (const entry of section.entries) {
-    const [pattern, target] = entry.text.split(/\s+/);
+    const [pattern, ...rest] = entry.text.split(/\s+/);
 
-    if (!pattern || !target) {
-      report('error', entry.line, 'Map Local 需要「匹配规则 + 本地路径」');
+    if (!pattern || rest.length === 0) {
+      report('error', entry.line, 'Map Local 需要「匹配规则 + 本地路径/数据」');
       continue;
     }
 
-    if (!isValidRegex(pattern)) report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    if (!pattern.includes('{{') && !isValidRegex(pattern)) {
+      report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    }
 
-    if (target !== '-' && !target.startsWith('/') && !/^https?:\/\//i.test(target)) {
-      report('warn', entry.line, `本地路径应以 / 开头: ${target}`);
+    for (const field of rest) {
+      const separator = field.indexOf('=');
+
+      if (separator !== -1) {
+        const key = field.slice(0, separator).trim().toLowerCase();
+        if (!MAP_LOCAL_OPTIONS.has(key))
+          report('warn', entry.line, `未知 Map Local 参数 \`${key}\``);
+        continue;
+      }
+
+      if (field !== '-' && !field.startsWith('/') && !/^https?:\/\//i.test(field)) {
+        report('warn', entry.line, `本地路径应以 / 开头: ${field}`);
+      }
     }
   }
 }
 
 function lintBodyRewrite(section, report) {
   for (const entry of section.entries) {
-    const [pattern, ...replacement] = entry.text.split(/\s+/);
+    const fields = entry.text.split(/\s+/);
+    const jq = JQ_ACTIONS.has((fields[0] || '').toLowerCase());
+    const pattern = jq ? fields[1] : fields[0];
 
-    if (!pattern || replacement.length === 0) {
+    if (!pattern || (jq && fields.length < 3) || (!jq && fields.length < 2)) {
       report('warn', entry.line, 'Body Rewrite 通常需要「匹配规则 + 替换内容」');
       continue;
     }
 
-    if (!isValidRegex(pattern)) report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    if (!pattern.includes('{{') && !isValidRegex(pattern)) {
+      report('warn', entry.line, `匹配规则不是合法正则: ${pattern}`);
+    }
   }
 }
 
@@ -335,6 +442,8 @@ function lintHost(section, report) {
 
     const host = entry.text.slice(0, separator).trim();
     const address = entry.text.slice(separator + 1).trim();
+
+    if (entry.text.includes('{{')) continue;
 
     if (!isValidHostname(host)) report('warn', entry.line, `域名不合法: ${host}`);
     if (address !== '-' && net.isIP(address) === 0) {
@@ -363,6 +472,36 @@ const SECTION_LINTERS = {
   Panel: lintKeyValue,
   General: lintKeyValue,
 };
+
+function lintArguments(meta, text, report) {
+  const directive = meta.get('arguments');
+  const declared = directive ? parseArguments(directive.value) : new Map();
+
+  if (directive) {
+    if (declared.size === 0) {
+      report('warn', directive.line, '`#!arguments` 没有解析出参数');
+    }
+
+    const seen = new Set();
+
+    for (const part of splitFields(directive.value)) {
+      const item = part.trim();
+      if (!item) continue;
+
+      const separator = item.search(/[:=]/);
+      const name = (separator === -1 ? item : item.slice(0, separator)).trim();
+
+      if (!name) report('warn', directive.line, `\`#!arguments\` 存在空参数名: ${item}`);
+      else if (seen.has(name)) report('warn', directive.line, `参数重复声明: ${name}`);
+      seen.add(name);
+    }
+  }
+
+  for (const [name, line] of collectPlaceholders(text)) {
+    if (declared.has(name) || BUILTIN_PLACEHOLDERS.has(name)) continue;
+    report('warn', line, `占位符 {{{${name}}}} 未在 #!arguments 中声明`);
+  }
+}
 
 /**
  * 校验一个 .sgmodule 文件。
@@ -430,25 +569,25 @@ export function lintSgmodule(text, report) {
     if (section.entries.length === 0) report('warn', section.line, `段落 [${section.name}] 为空`);
   }
 
+  lintArguments(meta, text, report);
+
   let httpScripts = 0;
   let mitmDeclared = false;
+  let scriptSection = null;
 
   for (const [sectionName, lint] of Object.entries(SECTION_LINTERS)) {
     const section = seen.get(sectionName);
     if (!section) continue;
 
     const result = lint(section, report);
-    if (sectionName === 'Script') httpScripts = result || 0;
+    if (sectionName === 'Script') {
+      httpScripts = result || 0;
+      scriptSection = section;
+    }
     if (sectionName === 'MITM') mitmDeclared = Boolean(result);
   }
 
   if (httpScripts > 0 && !mitmDeclared) {
-    report(
-      'warn',
-      seen.get('Script').line,
-      '存在 http-* 脚本但未声明 [MITM] hostname，请求不会被解密',
-    );
+    report('warn', scriptSection.line, '存在 http-* 脚本但未声明 [MITM] hostname，请求不会被解密');
   }
 }
-
-export { RULE_TYPES, validCidr };

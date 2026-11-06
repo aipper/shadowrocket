@@ -20,6 +20,8 @@
 2. 粘贴下方索引中的 raw 或 jsDelivr 地址
 3. 保存后返回首页，按模块需要开启 MITM
 
+带参数的模块（如 NodeSeek 签到）导入后，在模块详情里点「编辑参数」配置；首次使用按对应说明临时开启 Cookie 捕获。
+
 需要 MITM 的模块：设置 → 证书 → 生成并安装证书，再在系统「证书信任设置」中信任该证书，同时打开 Shadowrocket 的「MITM」开关。
 
 ### 导入规则集
@@ -36,7 +38,13 @@
 
 <!-- modules:start -->
 
-共 **0** 个模块，还没有内容。
+共 **1** 个模块。
+
+### 自动签到
+
+| 模块                                              | 说明                                                   | 作者   | 导入地址                                                                                                                                                                                                 |
+| ------------------------------------------------- | ------------------------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [NodeSeek 签到](docs/modules/nodeseek-checkin.md) | 自动签到领取鸡腿，支持 Cookie 捕获、固定奖励与鸡腿统计 | aipper | [raw](https://raw.githubusercontent.com/aipper/shadowrocket/main/modules/nodeseek-checkin.sgmodule) · [jsDelivr](https://cdn.jsdelivr.net/gh/aipper/shadowrocket@main/modules/nodeseek-checkin.sgmodule) |
 
 <!-- modules:end -->
 

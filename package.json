@@ -13,6 +13,7 @@
     "index": "node scripts/build-index.mjs",
     "index:check": "node scripts/build-index.mjs --check",
     "lint": "prettier --check .",
+    "test": "node --test",
     "format": "prettier --write .",
     "prepare": "husky"
   },

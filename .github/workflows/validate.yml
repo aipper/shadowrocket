@@ -29,6 +29,9 @@ jobs:
       - name: 校验模块 / 脚本 / 规则 / 配置
         run: npm run validate
 
+      - name: 模块脚本单元测试
+        run: npm test
+
       - name: 检查 README 索引
         run: npm run index:check
 
